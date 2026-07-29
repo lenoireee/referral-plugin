@@ -2,11 +2,9 @@
 /**
  * Plugin Name: Smart Referral Pro
  * Description: Advanced referral system with wallet, coupons, and admin dashboard
- * Version: 1.0.0
+ * Version: 2.0.0
  * Author: Smart Referral Pro
- * Requires at least: 6.0
- * Requires PHP: 8.0
- * WC requires at least: 8.0
+ * Update URI: https://github.com/lenoireee/referral-plugin
  */
 
 if (!defined('ABSPATH')) {
