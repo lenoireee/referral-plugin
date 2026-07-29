@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Smart Referral Pro
  * Description: Advanced referral system with wallet, coupons, and admin dashboard
- * Version: 3.0.0
+ * Version: 3.0.1
  * Author: Smart Referral Pro
  * Update URI: https://github.com/lenoireee/referral-plugin
  */
