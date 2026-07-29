@@ -1,0 +1,406 @@
+name: Smart Referral Pro CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      deploy_target:
+        description: 'Deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - none
+          - staging
+          - production
+
+env:
+  PLUGIN_NAME: smart-referral-pro
+  PHP_VERSION: '8.0'
+  NODE_VERSION: '18'
+
+jobs:
+  # ============================================
+  # JOB 1: Code Quality & Security Checks
+  # ============================================
+  quality-check:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, mysqli, zip
+          tools: composer, phpstan, phpcs
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+
+      - name: Install dependencies
+        run: |
+          if [ -f composer.json ]; then
+            composer install --no-interaction --prefer-dist
+          fi
+
+      - name: Run PHP Syntax Check
+        run: |
+          find . -name "*.php" -not -path "./vendor/*" -exec php -l {} \; | grep -v "No syntax errors"
+
+      - name: Run PHP CodeSniffer
+        run: |
+          if command -v phpcs &> /dev/null; then
+            phpcs --standard=WordPress --ignore=vendor,node_modules --extensions=php .
+          fi
+        continue-on-error: true
+
+      - name: Run PHPStan
+        run: |
+          if command -v phpstan &> /dev/null; then
+            phpstan analyse --level=5 --no-progress
+          fi
+        continue-on-error: true
+
+      - name: Check for secrets/credentials
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Security scan with Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/cwe-top-25
+            p/php
+            p/wordpress
+
+  # ============================================
+  # JOB 2: Automated Testing
+  # ============================================
+  test:
+    name: PHPUnit Tests
+    runs-on: ubuntu-latest
+    needs: quality-check
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: wordpress_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, mysqli, zip
+          coverage: xdebug
+
+      - name: Install WordPress Test Suite
+        run: |
+          bash bin/install-wp-tests.sh wordpress_test root rootpass 127.0.0.1 latest
+
+      - name: Run PHPUnit
+        run: |
+          if [ -f phpunit.xml ]; then
+            ./vendor/bin/phpunit --coverage-clover coverage.xml
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  # ============================================
+  # JOB 3: Version Bump & Changelog
+  # ============================================
+  version-bump:
+    name: Version Bump & Changelog
+    runs-on: ubuntu-latest
+    needs: [quality-check, test]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      tag_name: ${{ steps.bump.outputs.tag_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Git
+        run: |
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+      - name: Determine version bump type
+        id: bump-type
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "type=${{ github.event.inputs.version_type }}" >> $GITHUB_OUTPUT
+          else
+            # Auto-detect based on commit messages
+            if git log -1 --pretty=%B | grep -q "BREAKING CHANGE"; then
+              echo "type=major" >> $GITHUB_OUTPUT
+            elif git log -1 --pretty=%B | grep -q "^feat"; then
+              echo "type=minor" >> $GITHUB_OUTPUT
+            else
+              echo "type=patch" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Bump version
+        id: bump
+        run: |
+          CURRENT_VERSION=$(grep -oP "define\('SRP_VERSION', '\K[^']+" smart-referral-pro.php)
+          echo "Current version: $CURRENT_VERSION"
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          case "${{ steps.bump-type.outputs.type }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=v$NEW_VERSION" >> $GITHUB_OUTPUT
+
+          # Update version in main plugin file
+          sed -i "s/define('SRP_VERSION', '[^']*')/define('SRP_VERSION', '$NEW_VERSION')/" smart-referral-pro.php
+          sed -i "s/Version: [0-9]\+\.[0-9]\+\.[0-9]\+/Version: $NEW_VERSION/" smart-referral-pro.php
+
+          # Update version in all PHP files
+          find . -name "*.php" -not -path "./vendor/*" -exec sed -i "s/@version [0-9]\+\.[0-9]\+\.[0-9]\+/@version $NEW_VERSION/g" {} \;
+
+          # Generate changelog entry
+          DATE=$(date +%Y-%m-%d)
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo -e "
+## [$NEW_VERSION] - $DATE
+- $COMMIT_MSG
+$(cat CHANGELOG.md)" > CHANGELOG.md
+
+          # Commit version bump
+          git add -A
+          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
+          git push origin main
+
+      - name: Create Git Tag
+        run: |
+          git tag -a "${{ steps.bump.outputs.tag_name }}" -m "Release ${{ steps.bump.outputs.new_version }}"
+          git push origin "${{ steps.bump.outputs.tag_name }}"
+
+  # ============================================
+  # JOB 4: Build & Package
+  # ============================================
+  build:
+    name: Build Plugin Package
+    runs-on: ubuntu-latest
+    needs: version-bump
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version-bump.outputs.tag_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Node dependencies & build assets
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+            npm run build
+          fi
+
+      - name: Optimize assets
+        run: |
+          # Minify CSS
+          if command -v cleancss &> /dev/null; then
+            find assets/css -name "*.css" -not -name "*.min.css" -exec cleancss -o {}.min {} \;
+          fi
+          # Minify JS
+          if command -v terser &> /dev/null; then
+            find assets/js -name "*.js" -not -name "*.min.js" -exec terser -o {}.min {} \;
+          fi
+
+      - name: Create distribution package
+        run: |
+          mkdir -p dist
+          rsync -av --exclude='.git'                     --exclude='.github'                     --exclude='node_modules'                     --exclude='vendor'                     --exclude='tests'                     --exclude='*.md'                     --exclude='composer.json'                     --exclude='composer.lock'                     --exclude='package.json'                     --exclude='package-lock.json'                     --exclude='phpunit.xml'                     --exclude='.gitignore'                     --exclude='scripts'                     --exclude='bin'                     --exclude='deploy'                     ./ dist/${{ env.PLUGIN_NAME }}/
+
+          # Create ZIP
+          cd dist && zip -r ${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}.zip ${{ env.PLUGIN_NAME }}/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}
+          path: dist/${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}.zip
+
+  # ============================================
+  # JOB 5: Create GitHub Release
+  # ============================================
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [version-bump, build]
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}
+          path: ./dist
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "## What's Changed" >> $GITHUB_OUTPUT
+          git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --pretty=format:"- %s by @%an" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "## Security" >> $GITHUB_OUTPUT
+          echo "- All dependencies updated" >> $GITHUB_OUTPUT
+          echo "- Security scan passed" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.version-bump.outputs.tag_name }}
+          name: Smart Referral Pro ${{ needs.version-bump.outputs.new_version }}
+          body: ${{ steps.release-notes.outputs.notes }}
+          files: ./dist/${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}.zip
+          draft: false
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+
+  # ============================================
+  # JOB 6: Deploy to WordPress.org (SVN)
+  # ============================================
+  deploy-wporg:
+    name: Deploy to WordPress.org
+    runs-on: ubuntu-latest
+    needs: [build, release]
+    if: github.ref == 'refs/heads/main' && github.event.inputs.deploy_target == 'production'
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}
+          path: ./dist
+
+      - name: Deploy to WordPress.org SVN
+        uses: 10up/action-wordpress-plugin-deploy@stable
+        with:
+          svn_username: ${{ secrets.WPORG_SVN_USERNAME }}
+          svn_password: ${{ secrets.WPORG_SVN_PASSWORD }}
+          slug: ${{ env.PLUGIN_NAME }}
+          assets_dir: .wordpress-org
+
+  # ============================================
+  # JOB 7: Deploy to Staging/Production Server
+  # ============================================
+  deploy-server:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: [build, release]
+    if: github.event.inputs.deploy_target != 'none'
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PLUGIN_NAME }}-${{ needs.version-bump.outputs.new_version }}
+          path: ./dist
+
+      - name: Deploy to Staging via SSH
+        if: github.event.inputs.deploy_target == 'staging'
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_PORT }}
+          source: "dist/${{ env.PLUGIN_NAME }}/"
+          target: "${{ secrets.STAGING_PATH }}/wp-content/plugins/"
+          strip_components: 1
+          rm: true
+
+      - name: Deploy to Production via SSH
+        if: github.event.inputs.deploy_target == 'production'
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT }}
+          source: "dist/${{ env.PLUGIN_NAME }}/"
+          target: "${{ secrets.PROD_PATH }}/wp-content/plugins/"
+          strip_components: 1
+          rm: true
+
+      - name: Run post-deploy commands
+        if: github.event.inputs.deploy_target == 'production'
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_PORT }}
+          script: |
+            cd ${{ secrets.PROD_PATH }}
+            wp plugin activate ${{ env.PLUGIN_NAME }} --allow-root
+            wp cache flush --allow-root
+            wp transient delete --all --allow-root

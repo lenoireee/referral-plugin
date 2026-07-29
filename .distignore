@@ -1,0 +1,43 @@
+# WordPress Plugin Deploy Ignore
+/.wordpress-org
+/.git
+/.github
+/node_modules
+/tests
+/scripts
+/deploy
+/bin
+
+# Development files
+.gitignore
+.distignore
+.editorconfig
+.eslintrc
+.stylelintrc
+.prettierrc
+phpcs.xml
+phpunit.xml
+composer.json
+composer.lock
+package.json
+package-lock.json
+yarn.lock
+webpack.config.js
+vite.config.js
+
+# Documentation
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

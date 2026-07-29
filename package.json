@@ -1,0 +1,25 @@
+{
+  "name": "smart-referral-pro",
+  "version": "1.0.0",
+  "description": "Advanced referral system for WooCommerce",
+  "scripts": {
+    "build": "npm run build:css && npm run build:js",
+    "build:css": "cleancss -o assets/css/admin.min.css assets/css/admin.css && cleancss -o assets/css/public.min.css assets/css/public.css",
+    "build:js": "terser assets/js/admin.js -o assets/js/admin.min.js && terser assets/js/public.js -o assets/js/public.min.js",
+    "watch": "npm-run-all --parallel watch:*",
+    "watch:css": "chokidar 'assets/css/*.css' -c 'npm run build:css'",
+    "watch:js": "chokidar 'assets/js/*.js' -c 'npm run build:js'",
+    "version": "php scripts/git-pusher.php version",
+    "release": "php scripts/git-pusher.php release",
+    "deploy:staging": "php scripts/git-pusher.php deploy staging",
+    "deploy:production": "php scripts/git-pusher.php deploy production",
+    "test": "composer test",
+    "lint": "composer lint"
+  },
+  "devDependencies": {
+    "clean-css-cli": "^5.6",
+    "terser": "^5.19",
+    "chokidar-cli": "^3.0",
+    "npm-run-all": "^4.1"
+  }
+}

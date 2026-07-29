@@ -1,0 +1,23 @@
+{
+  "staging": {
+    "host": "staging.yoursite.com",
+    "user": "deploy_user",
+    "path": "/var/www/staging",
+    "ssh_key": "~/.ssh/id_rsa_staging",
+    "post_deploy": [
+      "cd /var/www/staging && wp plugin activate smart-referral-pro --allow-root",
+      "cd /var/www/staging && wp cache flush --allow-root"
+    ]
+  },
+  "production": {
+    "host": "yoursite.com",
+    "user": "deploy_user",
+    "path": "/var/www/html",
+    "ssh_key": "~/.ssh/id_rsa_production",
+    "post_deploy": [
+      "cd /var/www/html && wp plugin activate smart-referral-pro --allow-root",
+      "cd /var/www/html && wp cache flush --allow-root",
+      "cd /var/www/html && wp transient delete --all --allow-root"
+    ]
+  }
+}
