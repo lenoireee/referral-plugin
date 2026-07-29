@@ -17,6 +17,19 @@ define('SRP_VERSION', '1.0.0');
 define('SRP_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SRP_PLUGIN_URL', plugin_dir_url(__FILE__));
 
+// ============================================
+// GitHub Updater Integration
+// ============================================
+if (file_exists(SRP_PLUGIN_DIR . 'github-updater.php')) {
+    require_once SRP_PLUGIN_DIR . 'github-updater.php';
+    
+    if (class_exists('RYSE\\GitHubUpdaterDemo\\GitHubUpdater')) {
+        $updater = new RYSE\GitHubUpdaterDemo\GitHubUpdater(__FILE__);
+        $updater->setBranch('wordpress');  // Your release branch
+        $updater->add();
+    }
+}
+
 // Autoloader
 spl_autoload_register(function ($class) {
     $prefix = 'SRP\\';
